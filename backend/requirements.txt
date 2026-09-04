@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+pydantic
+pydantic-settings
+langchain
+langchain-groq
+playwright
+httpx
+beautifulsoup4
+sqlalchemy
+aiosqlite
+python-dotenv
+sse-starlette
