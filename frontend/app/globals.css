@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+@layer base {
+  :root {
+    --background: #ffffff;
+    --foreground: #09090b;
+    --card: #ffffff;
+    --card-foreground: #09090b;
+    --popover: #ffffff;
+    --popover-foreground: #09090b;
+    --primary: #18181b;
+    --primary-foreground: #fafafa;
+    --secondary: #f4f4f5;
+    --secondary-foreground: #18181b;
+    --muted: #f4f4f5;
+    --muted-foreground: #71717a;
+    --accent: #f4f4f5;
+    --accent-foreground: #18181b;
+    --destructive: #ef4444;
+    --destructive-foreground: #fafafa;
+    --border: #e4e4e7;
+    --input: #e4e4e7;
+    --ring: #18181b;
+    --radius: 0.5rem;
+  }
+  .dark {
+    /* Razorpay Fintech Dark Palette */
+    --background: #02042B;
+    --foreground: #f8fafc;
+    --card: #0C2340;
+    --card-foreground: #f8fafc;
+    --popover: #0C2340;
+    --popover-foreground: #f8fafc;
+    --primary: #0052FF;
+    --primary-foreground: #ffffff;
+    --secondary: #0C2340;
+    --secondary-foreground: #94a3b8;
+    --muted: #0C2340;
+    --muted-foreground: #94a3b8;
+    --accent: #10B981;
+    --accent-foreground: #02042B;
+    --destructive: #ef4444;
+    --destructive-foreground: #fafafa;
+    --border: rgba(0, 82, 255, 0.2);
+    --input: rgba(0, 82, 255, 0.1);
+    --ring: #0052FF;
+  }
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}
