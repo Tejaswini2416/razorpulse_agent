@@ -24,10 +24,18 @@ export type AuditLogEntry = {
   analysis?: Record<string, unknown> | null;
 };
 
+export async function checkRoot(): Promise<{ status: string }> {
+  const response = await fetch(`${API_BASE_URL}/`);
+  if (!response.ok) {
+    throw new Error(`Root health check failed with HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
 export async function checkHealth(): Promise<{ status: string }> {
   const response = await fetch(`${API_BASE_URL}/health`);
   if (!response.ok) {
-    throw new Error("Backend service unavailable");
+    throw new Error(`Health check failed with HTTP ${response.status}`);
   }
   return response.json();
 }

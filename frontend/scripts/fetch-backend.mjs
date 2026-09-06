@@ -1,27 +1,28 @@
-const BACKEND_URL = (process.env.NEXT_PUBLIC_API_URL || "https://razorpulse-agent.onrender.com").replace(/\/+$/, "");
+const BACKEND_URL = (process.env.NEXT_PUBLIC_API_URL || process.env.VITE_API_URL || "https://razorpulse-agent.onrender.com").replace(/\/+$/, "");
 
-async function fetchBackend() {
-  console.log(`📡 Fetching backend status from: ${BACKEND_URL}`);
-  const startTime = Date.now();
+async function fetchEndpoint(path) {
+  const url = `${BACKEND_URL}${path}`;
+  const start = Date.now();
+  console.log(`➡️  GET ${url}...`);
   try {
-    const healthUrl = `${BACKEND_URL}/health`;
-    console.log(`➡️  GET ${healthUrl}...`);
-    const res = await fetch(healthUrl);
-    const duration = Date.now() - startTime;
-    
+    const res = await fetch(url);
+    const duration = Date.now() - start;
     if (res.ok) {
       const data = await res.json();
-      console.log(`✅ Success (${res.status} ${res.statusText}) in ${duration}ms`);
-      console.log(`📦 Response:`, JSON.stringify(data, null, 2));
+      console.log(`   ✅ Success (${res.status} ${res.statusText}) in ${duration}ms:`, JSON.stringify(data));
     } else {
-      console.error(`⚠️  Backend returned status: ${res.status} ${res.statusText}`);
-      const text = await res.text();
-      console.log(`Response text:`, text);
+      console.error(`   ⚠️  HTTP Status ${res.status} ${res.statusText} in ${duration}ms`);
     }
-  } catch (error) {
-    const duration = Date.now() - startTime;
-    console.error(`❌ Fetch failed after ${duration}ms:`, error?.message || error);
+  } catch (err) {
+    const duration = Date.now() - start;
+    console.error(`   ❌ Failed in ${duration}ms:`, err?.message || err);
   }
 }
 
-fetchBackend();
+async function run() {
+  console.log(`📡 Connecting to Backend: ${BACKEND_URL}`);
+  await fetchEndpoint("/");
+  await fetchEndpoint("/health");
+}
+
+run();

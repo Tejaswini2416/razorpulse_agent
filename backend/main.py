@@ -24,10 +24,23 @@ except (ImportError, ValueError):
     from scraper import scrape_merchant_profile
 
 
+# Default allowed origins for local Vite/Next.js dev & live Vercel deployment
+DEFAULT_ALLOWED_ORIGINS = [
+    "https://razorpulse-agent.vercel.app",
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:3000",
+]
+
+configured_origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
+allowed_origins = list(dict.fromkeys(DEFAULT_ALLOWED_ORIGINS + configured_origins))
+
 app = FastAPI(title="RazorPulse Agent API", version="1.0.0")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -103,6 +116,11 @@ async def startup() -> None:
     await init_db()
 
 
+@app.get("/")
+async def root() -> dict[str, str]:
+    return {"status": "RazorPulse Agent API is running"}
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -158,6 +176,8 @@ async def get_audit_entry(session_id: str) -> AuditLogEntry:
 
 
 if __name__ == "__main__":
+    import os
     import uvicorn
 
-    uvicorn.run("main:app", host=settings.backend_host, port=settings.backend_port, reload=True)
+    port = int(os.environ.get("PORT", settings.backend_port))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)

@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     groq_model: str = "llama-3.3-70b-versatile"
     backend_host: str = "0.0.0.0"
     backend_port: int = 8000
-    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    cors_origins: str = "https://razorpulse-agent.vercel.app,http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000"
     sqlite_database_url: str = "sqlite+aiosqlite:///./razorpulse.db"
 
     model_config = SettingsConfigDict(
