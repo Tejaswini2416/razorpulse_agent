@@ -1,4 +1,4 @@
-const API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL || "https://razorpulse-agent.onrender.com").replace(/\/+$/, "");
+export const API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL || "https://razorpulse-agent.onrender.com").replace(/\/+$/, "");
 
 export type StatusEvent = {
   event: string;
