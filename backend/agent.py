@@ -1,141 +1,171 @@
+from __future__ import annotations
+
 import json
-# pyrefly: ignore [missing-import]
-from langchain_groq import ChatGroq
-# pyrefly: ignore [missing-import]
-from langchain_core.prompts import ChatPromptTemplate
-from schemas import MerchantAnalysis
-from config import settings
+import time
+from typing import Any
 
-def get_groq_llm():
-    # Use the specified model and configure for JSON output
-    # Llama 3.3 70b versatile
-    llm = ChatGroq(
-        api_key=settings.groq_api_key,
-        model="llama-3.3-70b-versatile",
-        temperature=0.1,
-        max_tokens=2048,
-        model_kwargs={"response_format": {"type": "json_object"}}
-    )
-    return llm
+from groq import AsyncGroq
 
-system_prompt = """
-You are RazorPulse, an elite autonomous context-aware merchant onboarding and agentic commerce engine.
-Your task is to analyze scraped data from a merchant's digital footprint and synthesize it into a strict JSON object that matches our schema.
+try:
+    from .config import settings
+except (ImportError, ValueError):
+    from config import settings
 
-Requirements:
-- Classify the merchant and calculate a risk score (0-100).
-- Synthesize KYC data, finding GSTIN clues and registered names.
-- Recommend Razorpay products based on their profile.
-- Bounded logic:
-  - If cart abandonment is an issue, recommend Magic Checkout.
-  - If Instagram/Social seller, recommend Payment Pages / Payment Links.
-  - If Subscription/SaaS, recommend Subscriptions & AutoPay.
-  - If B2B, recommend Invoicing & Capital.
-  - CAP conversion lift estimates at 30%. Never exceed 30.0 for `estimated_conversion_lift_percent`.
-  - Only suggest high-tier products (Capital, Magic Checkout) if you have high confidence (> 80).
 
-You must respond with ONLY a JSON object that strictly adheres to the following schema structure:
-{{
-  "business_name": "string",
-  "detected_category": "string",
-  "cart_type": "string",
-  "estimated_aov": float,
-  "risk_score": int (0-100),
-  "kyc_prefill_data": {{
-    "gstin_clue": "string or null",
-    "registered_name": "string or null",
-    "compliance_checklist": ["item1", "item2"]
-  }},
-  "recommended_products": [
-    {{
-      "product_name": "string",
-      "rationale": "string",
-      "estimated_conversion_lift_percent": float (<= 30.0),
-      "annual_saved_revenue_inr": float,
-      "confidence_score": float (0-100)
-    }}
-  ]
-}}
+
+class GroqAgent:
+    def __init__(self, api_key: str | None = None, model: str | None = None) -> None:
+        self.api_key = api_key or settings.groq_api_key
+        self.model = model or settings.groq_model
+        self.client = AsyncGroq(api_key=self.api_key) if self.api_key and self.api_key != "demo-key" else None
+
+    async def classify_merchant(self, scraped: dict[str, Any]) -> dict[str, Any]:
+        prompt = f"""
+You are a merchant classification engine for Razorpay onboarding.
+Analyze this merchant profile and return a strict JSON object with:
+- business_name
+- detected_category
+- cart_type
+- estimated_aov
+- risk_score
+- confidence_score
+- summary
+- growth_levers
+- kyc_prefill_data: {{"legal_name": string, "gstin": string, "business_email": string, "business_phone": string, "registered_address": string, "compliance_checklist": string[], "verification_status": string}}
+- recommendations: array of product recommendations, each with product_name, category, match_score, roi_projection, annual_saved_revenue, rationale, confidence, explainability, guardrails, recommended, bounded_risk
+
+Use only bounded, explainable, business-safe logic.
+
+Profile JSON:
+{json.dumps(scraped, indent=2)}
 """
 
-prompt_template = ChatPromptTemplate.from_messages([
-    ("system", system_prompt),
-    ("user", "Scraped Data:\n{scraped_data}")
-])
 
-async def analyze_merchant_data(scraped_data: dict) -> MerchantAnalysis:
-    # If the user hasn't provided a valid key, mock the response to ensure the UI can be built and tested
-    if not settings.groq_api_key or settings.groq_api_key in ["mock-groq-key", "your_groq_api_key_here", "gsk_your_actual_key_here"] or not settings.groq_api_key.startswith("gsk_"):
-        return mock_analysis(scraped_data)
-        
-    try:
-        llm = get_groq_llm()
-        chain = prompt_template | llm
-        
-        response = await chain.ainvoke({"scraped_data": json.dumps(scraped_data)})
-        # response.content is a JSON string
-        result_dict = json.loads(response.content)
-        
-        # Enforce Pydantic validation (this will catch any out-of-bounds values like >30% lift)
-        return MerchantAnalysis(**result_dict)
-    except Exception as err:
-        print(f"LLM analysis error: {err}. Falling back to mock analysis.")
-        return mock_analysis(scraped_data)
+        if not self.client:
+            return self._fallback_classification(scraped)
 
-def mock_analysis(scraped_data: dict) -> MerchantAnalysis:
-    url = scraped_data.get("url", "")
-    
-    if "fashion" in url.lower() or "d2c" in url.lower():
-        return MerchantAnalysis(
-            business_name="Mock Fashion Brand",
-            detected_category="Fashion D2C",
-            cart_type="Shopify",
-            estimated_aov=2500.0,
-            risk_score=15,
-            kyc_prefill_data={"gstin_clue": "27AADCB2230M1Z2", "registered_name": "Mock Fashion Pvt Ltd", "compliance_checklist": ["Privacy Policy"]},
-            recommended_products=[
+        start = time.perf_counter()
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+                max_tokens=1200,
+            )
+            latency_ms = round((time.perf_counter() - start) * 1000, 2)
+            raw = response.choices[0].message.content
+            payload = json.loads(raw)
+            payload["_latency_ms"] = latency_ms
+            payload["_source"] = "groq"
+            return payload
+        except Exception:
+            latency_ms = round((time.perf_counter() - start) * 1000, 2)
+            return self._fallback_classification(scraped, latency_ms=latency_ms)
+
+
+    def _fallback_classification(self, scraped: dict[str, Any], latency_ms: float | None = None) -> dict[str, Any]:
+        business_name = scraped.get("business_name") or "Merchant Brand"
+        category = scraped.get("detected_category") or "General Commerce"
+        cart_type = scraped.get("cart_type") or "General eCommerce"
+        aov = int(scraped.get("estimated_aov") or 2500)
+        risk_score = int(scraped.get("risk_score") or 30)
+        if "Instagram" in cart_type or "social" in str(cart_type).lower():
+            recommendations = [
                 {
-                    "product_name": "Razorpay Magic Checkout",
-                    "rationale": "High cart abandonment detected for Shopify D2C brand.",
-                    "estimated_conversion_lift_percent": 25.0,
-                    "annual_saved_revenue_inr": 1500000.0,
-                    "confidence_score": 95.0
+                    "product_name": "Razorpay Payment Pages / Payment Links",
+                    "category": "Payments",
+                    "match_score": 96,
+                    "roi_projection": 18.2,
+                    "annual_saved_revenue": 960000,
+                    "rationale": "Social-first merchants benefit from instant payment collection with minimal checkout friction and link-based distribution.",
+                    "confidence": 96,
+                    "explainability": ["Social-first checkout pattern", "Direct monetization speed", "Lower drop-off risk"],
+                    "guardrails": ["Limit checkout to supported payment methods", "Monitor failure rates and API uptime"],
+                    "recommended": True,
+                    "bounded_risk": "Low",
                 }
             ]
-        )
-    elif "saas" in url.lower() or "b2b" in url.lower():
-         return MerchantAnalysis(
-            business_name="Mock SaaS Startup",
-            detected_category="B2B SaaS",
-            cart_type="Custom",
-            estimated_aov=10000.0,
-            risk_score=5,
-            kyc_prefill_data={"gstin_clue": "29ABCDE1234F1Z5", "registered_name": "Mock Tech Solutions", "compliance_checklist": ["Terms of Service"]},
-            recommended_products=[
+        elif "SaaS" in cart_type or "Subscription" in cart_type or "B2B" in str(cart_type).lower():
+            recommendations = [
                 {
                     "product_name": "Razorpay Subscriptions & AutoPay",
-                    "rationale": "Recurring revenue model detected.",
-                    "estimated_conversion_lift_percent": 15.0,
-                    "annual_saved_revenue_inr": 500000.0,
-                    "confidence_score": 90.0
+                    "category": "Subscriptions",
+                    "match_score": 93,
+                    "roi_projection": 25.4,
+                    "annual_saved_revenue": 2450000,
+                    "rationale": "Recurring revenue cohorts are best served by automated subscription billing and smart dunning sequences.",
+                    "confidence": 93,
+                    "explainability": ["Recurring revenue model", "Higher retention potential", "Lower manual billing overhead"],
+                    "guardrails": ["Validate billing cycles and retries", "Ensure compliant payment reminders"],
+                    "recommended": True,
+                    "bounded_risk": "Low",
                 }
             ]
-        )
-    else:
-        return MerchantAnalysis(
-            business_name="Generic Store",
-            detected_category="E-commerce",
-            cart_type="WooCommerce",
-            estimated_aov=1500.0,
-            risk_score=25,
-            kyc_prefill_data={"gstin_clue": None, "registered_name": None, "compliance_checklist": []},
-            recommended_products=[
+        elif "Fashion" in cart_type or "D2C" in cart_type:
+            recommendations = [
                 {
-                    "product_name": "Razorpay Payment Gateway",
-                    "rationale": "Standard ecommerce setup requires a reliable payment gateway.",
-                    "estimated_conversion_lift_percent": 10.0,
-                    "annual_saved_revenue_inr": 100000.0,
-                    "confidence_score": 99.0
+                    "product_name": "Razorpay Magic Checkout",
+                    "category": "Checkout",
+                    "match_score": 97,
+                    "roi_projection": 31.8,
+                    "annual_saved_revenue": 1850000,
+                    "rationale": "High cart-abandonment fashion merchants gain from a faster, one-click conversion path across payment methods.",
+                    "confidence": 97,
+                    "explainability": ["High abandonment signal", "Checkout friction reduction", "Conversion uplift on repeat buyers"],
+                    "guardrails": ["Track abandonment before and after rollout", "Keep payment method limits audit-friendly"],
+                    "recommended": True,
+                    "bounded_risk": "Low",
                 }
             ]
-        )
+        else:
+            recommendations = [
+                {
+                    "product_name": "Razorpay Invoicing & Razorpay Capital",
+                    "category": "B2B Finance",
+                    "match_score": 88,
+                    "roi_projection": 14.7,
+                    "annual_saved_revenue": 1180000,
+                    "rationale": "High-ticket transactions benefit from invoice automation and capital-linked working capital support.",
+                    "confidence": 88,
+                    "explainability": ["High ticket value", "Working capital need", "B2B invoice volume"],
+                    "guardrails": ["Verify credit risk based on transaction history", "Use capped exposure thresholds"],
+                    "recommended": True,
+                    "bounded_risk": "Medium",
+                }
+            ]
+
+        payload = {
+            "business_name": business_name,
+            "detected_category": category,
+            "cart_type": cart_type,
+            "estimated_aov": aov,
+            "risk_score": risk_score,
+            "confidence_score": 79,
+            "summary": "Merchant profile was classified with a bounded synthetic fallback due to limited live verification or demo mode constraints.",
+            "growth_levers": [
+                "Reduce checkout friction",
+                "Increase repeat-purchase absorption",
+                "Lower payment-link failure risk",
+            ],
+            "kyc_prefill_data": {
+                "legal_name": business_name,
+                "gstin": "GSTIN-VERIFY-REQD",
+                "business_email": "hello@merchant.example",
+                "business_phone": "+91 98765 43210",
+                "registered_address": "India",
+                "compliance_checklist": [
+                    "GST registration check",
+                    "PAN validation",
+                    "Bank account verification",
+                    "Business address verification",
+                ],
+                "verification_status": "inferred",
+            },
+            "recommendations": recommendations,
+            "failure_mode": "failed" in str(cart_type).lower() or risk_score > 75,
+            "failure_reason": "Synthetic fallback engaged due to incomplete or invalid merchant data." if risk_score > 75 else None,
+            "_latency_ms": latency_ms,
+            "_source": "fallback",
+        }
+        return payload

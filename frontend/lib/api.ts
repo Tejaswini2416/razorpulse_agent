@@ -1,110 +1,89 @@
-export interface ScraperStatus {
-  step: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+export type StatusEvent = {
+  event: string;
+  step?: number;
   message: string;
-  data?: Record<string, unknown>;
-}
-
-export interface ProductRecommendation {
-  product_name: string;
-  rationale: string;
-  estimated_conversion_lift_percent: number;
-  annual_saved_revenue_inr: number;
-  confidence_score: number;
-}
-
-export interface MerchantAnalysis {
-  business_name: string;
-  detected_category: string;
-  cart_type: string;
-  estimated_aov: number;
-  risk_score: number;
-  kyc_prefill_data: {
-    gstin_clue?: string;
-    registered_name?: string;
-    compliance_checklist: string[];
-  };
-  recommended_products: ProductRecommendation[];
-}
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
-
-export const analyzeMerchantStream = (
-  url: string,
-  onStatus: (status: ScraperStatus) => void,
-  onComplete: (data: Record<string, unknown>) => void,
-  onError: (error: string) => void
-) => {
-  const eventSource = new EventSource(`${API_BASE_URL}/analyze/stream?url=${encodeURIComponent(url)}`);
-
-  eventSource.addEventListener('status', (event: MessageEvent) => {
-    try {
-      const data = JSON.parse(event.data) as ScraperStatus;
-      onStatus(data);
-    } catch (e) {
-      console.error("Failed to parse status event", e);
-    }
-  });
-
-  eventSource.addEventListener('complete', (event: MessageEvent) => {
-    try {
-      const data = JSON.parse(event.data) as Record<string, unknown>;
-      onComplete(data);
-    } catch (e) {
-      console.error("Failed to parse complete event", e);
-    } finally {
-      eventSource.close();
-    }
-  });
-
-  eventSource.addEventListener('error', (event: any) => {
-    // If the stream was already closed or finished, don't trigger pipeline failure
-    if (eventSource.readyState === EventSource.CLOSED) {
-      return;
-    }
-    try {
-      const errData = event.data ? JSON.parse(event.data) as { error?: string } : null;
-      if (errData?.error) {
-        onError(errData.error);
-        eventSource.close();
-        return;
-      }
-    } catch {
-      // Not a custom JSON error
-    }
-    // Only fire if connection is genuinely broken and not completed
-    if (eventSource.readyState !== EventSource.CONNECTING) {
-      onError("Connection error during live analysis");
-      eventSource.close();
-    }
-  });
-
-  return () => {
-    eventSource.close();
-  };
+  status: "running" | "success" | "warning" | "failed";
+  payload?: Record<string, unknown>;
 };
 
-export const fetchResults = async (url: string): Promise<MerchantAnalysis> => {
-  const response = await fetch(`${API_BASE_URL}/results/${encodeURIComponent(url)}`);
-  if (!response.ok) {
-    throw new Error('Failed to fetch results');
-  }
-  return response.json();
-};
-
-export interface AuditLogEntry {
-  id: number;
-  timestamp: string;
-  step: string;
+export type SessionItem = {
+  session_id: string;
+  merchant_input: string;
   status: string;
-  details: string;
-  is_failure_recovery: boolean;
-}
+  created_at: string;
+};
 
-export const fetchAuditTrail = async (url: string): Promise<AuditLogEntry[]> => {
-  const response = await fetch(`${API_BASE_URL}/audit/${encodeURIComponent(url)}`);
+export type AuditLogEntry = {
+  session_id: string;
+  merchant_input: string;
+  status: string;
+  trace: Array<{ event?: string; payload?: Record<string, unknown>; error?: string }>;
+  scraped_summary: Record<string, unknown>;
+  analysis?: Record<string, unknown> | null;
+};
+
+export async function checkHealth(): Promise<{ status: string }> {
+  const response = await fetch(`${API_BASE_URL}/health`);
   if (!response.ok) {
-    throw new Error('Failed to fetch audit trail');
+    throw new Error("Backend service unavailable");
   }
   return response.json();
-};
+}
+
+export async function fetchRecentSessions(): Promise<SessionItem[]> {
+  const response = await fetch(`${API_BASE_URL}/sessions`);
+  if (!response.ok) {
+    throw new Error("Unable to fetch sessions");
+  }
+  return response.json();
+}
+
+export async function fetchAuditEntry(sessionId: string): Promise<AuditLogEntry> {
+  const response = await fetch(`${API_BASE_URL}/audit/${encodeURIComponent(sessionId)}`);
+  if (!response.ok) {
+    throw new Error("Unable to fetch audit entry");
+  }
+  return response.json();
+}
+
+export async function analyzeMerchant(merchantInput: string) {
+  const response = await fetch(`${API_BASE_URL}/analyze`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ merchant_input: merchantInput }),
+  });
+
+  if (!response.ok || !response.body) {
+    throw new Error(`Unable to start analysis: ${response.statusText || response.status}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  return {
+    async *events() {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() || "";
+        for (const chunk of parts) {
+          const line = chunk.trim();
+          if (!line.startsWith("data:")) continue;
+          const raw = line.replace(/^data:\s*/, "");
+          if (!raw) continue;
+          try {
+            yield JSON.parse(raw) as StatusEvent;
+          } catch {
+            // ignore malformed event payloads
+          }
+        }
+      }
+    },
+  };
+}
+

@@ -1,123 +1,163 @@
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from sse_starlette.sse import EventSourceResponse
+from __future__ import annotations
+
 import asyncio
 import json
-import datetime
-from schemas import MerchantRequest, ScraperStatus, MerchantAnalysis
-from scraper import scrape_url
-from agent import analyze_merchant_data
-from database import init_db, get_db, AuditLog, MerchantSession, AsyncSessionLocal
+import uuid
+from typing import Any
 
-app = FastAPI(title="RazorPulse API")
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 
+try:
+    from .agent import GroqAgent
+    from .config import settings
+    from .database import AsyncSessionFactory, AuditLog, init_db, log_audit_entry
+    from .schemas import AuditLogEntry, MerchantAnalysis, StatusUpdate
+    from .scraper import scrape_merchant_profile
+except (ImportError, ValueError):
+    from agent import GroqAgent
+    from config import settings
+    from database import AsyncSessionFactory, AuditLog, init_db, log_audit_entry
+    from schemas import AuditLogEntry, MerchantAnalysis, StatusUpdate
+    from scraper import scrape_merchant_profile
+
+
+app = FastAPI(title="RazorPulse Agent API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # For dev
+    allow_origins=[origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+agent = GroqAgent()
+
+
+async def stream_status(session_id: str, merchant_input: str) -> Any:
+    steps = [
+        "Extracting Digital Footprint & Visual Metadata...",
+        "Classifying Merchant Model via Groq LPU (llama-3.3-70b-versatile)...",
+        "Synthesizing KYC & GST Metadata...",
+        "Running Agentic Product Matchmaking Matrix...",
+    ]
+    trace: list[dict[str, Any]] = []
+    scraped = await scrape_merchant_profile(merchant_input)
+    trace.append({"event": "scrape", "payload": scraped})
+    for index, message in enumerate(steps, start=1):
+        event = StatusUpdate(event="status", step=index, message=message, status="running")
+        yield f"data: {json.dumps(event.model_dump(mode='json'))}\n\n"
+        await asyncio.sleep(0.6)
+    classification = await agent.classify_merchant(scraped)
+    trace.append({"event": "classification", "payload": classification})
+    try:
+        analysis = MerchantAnalysis.model_validate(classification)
+    except ValidationError:
+        analysis = MerchantAnalysis(
+            business_name=scraped.get("business_name", "Merchant Brand"),
+            detected_category=scraped.get("detected_category", "General Commerce"),
+            cart_type=scraped.get("cart_type", "General eCommerce"),
+            estimated_aov=int(scraped.get("estimated_aov") or 2500),
+            risk_score=int(scraped.get("risk_score") or 30),
+            confidence_score=int(classification.get("confidence_score") or 75),
+            kyc_prefill_data={
+                "legal_name": classification.get("kyc_prefill_data", {}).get("legal_name", scraped.get("business_name", "Merchant Brand")),
+                "gstin": classification.get("kyc_prefill_data", {}).get("gstin", "GSTIN-VERIFY-REQD"),
+                "business_email": classification.get("kyc_prefill_data", {}).get("business_email", "hello@merchant.example"),
+                "business_phone": classification.get("kyc_prefill_data", {}).get("business_phone", "+91 98765 43210"),
+                "registered_address": classification.get("kyc_prefill_data", {}).get("registered_address", "India"),
+                "compliance_checklist": classification.get("kyc_prefill_data", {}).get("compliance_checklist", ["GST registration check"]),
+                "verification_status": classification.get("kyc_prefill_data", {}).get("verification_status", "inferred"),
+            },
+            summary=classification.get("summary", "Merchant profile classified successfully."),
+            recommendations=[
+                {
+                    "product_name": rec.get("product_name", "Razorpay Product"),
+                    "category": rec.get("category", "Payments"),
+                    "match_score": int(rec.get("match_score", 80)),
+                    "roi_projection": float(rec.get("roi_projection", 10.0)),
+                    "annual_saved_revenue": float(rec.get("annual_saved_revenue", 0.0)),
+                    "rationale": rec.get("rationale", "Recommendation based on supported merchant model.") ,
+                    "confidence": int(rec.get("confidence", 80)),
+                    "explainability": rec.get("explainability", ["Bounded to a safe position"]),
+                    "guardrails": rec.get("guardrails", ["Use audit logs for review"]),
+                    "recommended": bool(rec.get("recommended", True)),
+                    "bounded_risk": rec.get("bounded_risk", "Low"),
+                }
+                for rec in classification.get("recommendations", [])
+            ],
+            growth_levers=classification.get("growth_levers", ["Checkout optimization"]),
+            failure_mode=bool(classification.get("failure_mode", False)),
+            failure_reason=classification.get("failure_reason"),
+        )
+
+    payload = analysis.model_dump(mode='json')
+    yield f"data: {json.dumps(StatusUpdate(event='analysis', message='Merchant profile classified successfully.', status='success', payload=payload).model_dump(mode='json'))}\n\n"
+    await log_audit_entry(session_id, merchant_input, 'completed', trace, scraped, payload)
+
+
 @app.on_event("startup")
-async def startup_event():
+async def startup() -> None:
     await init_db()
 
-@app.get("/api/analyze/stream")
-async def analyze_merchant_stream(url: str, request: Request):
-    async def event_generator():
-        try:
-            # Step 1: Initialize
-            yield {"event": "status", "data": json.dumps({"step": "Initializing", "status": "running", "message": "Starting evaluation pipeline...", "data": None})}
-            await asyncio.sleep(1)
-            
-            # Step 2: Scraping
-            yield {"event": "status", "data": json.dumps({"step": "Scraping", "status": "running", "message": f"Extracting Digital Footprint & Visual Metadata for {url}...", "data": None})}
-            scraped_data = await scrape_url(url)
-            
-            # Log scraping result
-            async with AsyncSessionLocal() as db:
-                audit = AuditLog(
-                    merchant_url=url,
-                    step="Scraping",
-                    status="success" if not scraped_data.is_fallback else "fallback",
-                    details=scraped_data.model_dump_json(),
-                    is_failure_recovery=scraped_data.is_fallback
-                )
-                db.add(audit)
-                await db.commit()
 
-            yield {"event": "status", "data": json.dumps({"step": "Scraping", "status": "completed", "message": "Scraping complete.", "data": scraped_data.model_dump()})}
-            await asyncio.sleep(1)
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
 
-            # Step 3: Agentic Analysis
-            yield {"event": "status", "data": json.dumps({"step": "Agentic Analysis", "status": "running", "message": "Running multi-modal analysis & classifying merchant model...", "data": None})}
-            analysis_result = await analyze_merchant_data(scraped_data.model_dump())
-            
-            # Log Agentic Analysis
-            async with AsyncSessionLocal() as db:
-                from sqlalchemy import select
-                audit = AuditLog(
-                    merchant_url=url,
-                    step="Agentic Analysis",
-                    status="success",
-                    details=analysis_result.model_dump_json()
-                )
-                db.add(audit)
-                
-                # Upsert session: update if URL already exists, or insert new
-                stmt = select(MerchantSession).where(MerchantSession.merchant_url == url)
-                res = await db.execute(stmt)
-                existing_session = res.scalars().first()
-                if existing_session:
-                    existing_session.analysis_result = analysis_result.model_dump_json()
-                    existing_session.created_at = datetime.datetime.utcnow()
-                else:
-                    session = MerchantSession(merchant_url=url, analysis_result=analysis_result.model_dump_json())
-                    db.add(session)
-                await db.commit()
 
-            yield {"event": "status", "data": json.dumps({"step": "Agentic Analysis", "status": "completed", "message": "Analysis complete.", "data": analysis_result.model_dump()})}
-            
-            # Final Completion event
-            yield {"event": "complete", "data": json.dumps({"message": "Pipeline completed successfully.", "url": url})}
+@app.post("/analyze")
+async def analyze_merchant(payload: dict[str, str]) -> StreamingResponse:
+    merchant_input = payload.get("merchant_input", "").strip()
+    if not merchant_input:
+        raise HTTPException(status_code=400, detail="merchant_input is required")
 
-        except Exception as e:
-            # Handle and log catastrophic failure
-            async with AsyncSessionLocal() as db:
-                audit = AuditLog(
-                    merchant_url=url,
-                    step="Pipeline Execution",
-                    status="error",
-                    details=json.dumps({"error": str(e)}),
-                    is_failure_recovery=True
-                )
-                db.add(audit)
-                await db.commit()
-            
-            yield {"event": "error", "data": json.dumps({"error": str(e)})}
-            
-    return EventSourceResponse(event_generator())
+    session_id = str(uuid.uuid4())
+    return StreamingResponse(stream_status(session_id, merchant_input), media_type="text/event-stream")
 
-@app.get("/api/results/{url:path}")
-async def get_results(url: str):
-    async with AsyncSessionLocal() as db:
-        from sqlalchemy import select
-        # Get the latest session
-        stmt = select(MerchantSession).where(MerchantSession.merchant_url == url).order_by(MerchantSession.created_at.desc())
-        result = await db.execute(stmt)
-        session = result.scalars().first()
-        
-        if session:
-            return json.loads(session.analysis_result)
-        return {"error": "Not found"}
 
-@app.get("/api/audit/{url:path}")
-async def get_audit_trail(url: str):
-    async with AsyncSessionLocal() as db:
-        from sqlalchemy import select
-        stmt = select(AuditLog).where(AuditLog.merchant_url == url).order_by(AuditLog.timestamp.asc())
-        result = await db.execute(stmt)
-        logs = result.scalars().all()
-        
-        return [{"id": log.id, "timestamp": log.timestamp.isoformat(), "step": log.step, "status": log.status, "details": log.details, "is_failure_recovery": log.is_failure_recovery} for log in logs]
+@app.get("/sessions")
+async def get_recent_sessions() -> list[dict[str, Any]]:
+    from .database import AsyncSessionFactory, AuditLog
+    from sqlalchemy import select
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(10))
+        rows = result.scalars().all()
+        return [
+            {
+                "session_id": row.session_id,
+                "merchant_input": row.merchant_input,
+                "status": row.status,
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in rows
+        ]
+
+
+@app.get("/audit/{session_id}")
+async def get_audit_entry(session_id: str) -> AuditLogEntry:
+    from .database import AsyncSessionFactory, AuditLog
+    from sqlalchemy import select
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(select(AuditLog).where(AuditLog.session_id == session_id))
+        row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return AuditLogEntry(
+        session_id=row.session_id,
+        merchant_input=row.merchant_input,
+        status=row.status,
+        trace=json.loads(row.trace or "[]"),
+        scraped_summary=json.loads(row.scraped_summary or "{}"),
+        analysis=json.loads(row.analysis or "null") if row.analysis else None,
+    )
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("main:app", host=settings.backend_host, port=settings.backend_port, reload=True)

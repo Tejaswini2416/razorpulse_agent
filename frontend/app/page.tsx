@@ -1,122 +1,156 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { motion } from "framer-motion";
+import { ArrowRight, CheckCheck, Globe, Loader2, ShieldCheck, Sparkles } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { Zap, Search, AlertCircle, ShoppingBag, Briefcase, Share2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { analyzeMerchant } from "@/lib/api";
+import { ScraperProgress } from "@/components/ScraperProgress";
 
-export default function Home() {
-  const [url, setUrl] = useState("");
+const presets = [
+  { label: "Fashion D2C Brand (High Cart Drops)", value: "Fashion D2C brand with high cart abandonment and checkout friction" },
+  { label: "B2B SaaS Startup (Recurring Invoices)", value: "B2B SaaS startup with recurring invoices and subscription billing" },
+  { label: "Niche Artisan Store (Instagram-First / Payment Links)", value: "Instagram-first artisan store selling custom products via payment links" },
+  { label: "Broken / Invalid Store (To prove Failure Recovery & Fallback Mode)", value: "Broken / invalid store" },
+];
+
+const defaultSteps = [
+  { label: "Extracting Digital Footprint & Visual Metadata...", done: false, current: true },
+  { label: "Classifying Merchant Model via Groq LPU (llama-3.3-70b-versatile)...", done: false, current: false },
+  { label: "Synthesizing KYC & GST Metadata...", done: false, current: false },
+  { label: "Running Agentic Product Matchmaking Matrix...", done: false, current: false },
+];
+
+export default function HomePage() {
   const router = useRouter();
+  const [input, setInput] = useState(presets[0].value);
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState<string>("");
+  const [steps, setSteps] = useState(defaultSteps);
 
-  const handleEvaluate = (targetUrl?: string) => {
-    const finalUrl = targetUrl || url;
-    if (!finalUrl) return;
-    router.push(`/dashboard?url=${encodeURIComponent(finalUrl)}`);
+  const handlePreset = (value: string) => {
+    setInput(value);
   };
 
-  const setPreset = (presetUrl: string) => {
-    setUrl(presetUrl);
-    handleEvaluate(presetUrl);
+  const handleAnalyze = async () => {
+    setLoading(true);
+    setStatus("Starting merchant intelligence run...");
+    setSteps(defaultSteps);
+    try {
+      const stream = await analyzeMerchant(input);
+      let stepIndex = 0;
+      const finalStatus: Record<string, unknown> = {};
+      for await (const event of stream.events()) {
+        if (event.event === "status" && typeof event.step === "number") {
+          stepIndex = event.step - 1;
+          setStatus(event.message);
+          setSteps((prev) =>
+            prev.map((step, idx) => ({
+              ...step,
+              done: idx < stepIndex,
+              current: idx === stepIndex,
+            }))
+          );
+        }
+
+        if (event.event === "analysis") {
+          finalStatus.analysis = event.payload;
+          setStatus("Analysis complete. Redirecting to dashboard...");
+          setTimeout(() => {
+            router.push(`/dashboard?data=${encodeURIComponent(JSON.stringify(event.payload))}`);
+          }, 700);
+        }
+      }
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Unexpected failure occurred.");
+      setSteps((prev) => prev.map((step, idx) => ({ ...step, done: idx === prev.length - 1, current: false })));
+    } finally {
+      setLoading(false);
+    }
   };
+
+  const stepCount = useMemo(() => steps.filter((step) => step.done).length, [steps]);
 
   return (
-    <div className="min-h-screen bg-[#02042B] flex flex-col items-center justify-center p-6 text-white bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-[#0b244d] via-[#02042B] to-[#010214]">
-      <div className="w-full max-w-3xl space-y-10">
-        <div className="text-center space-y-4">
-          <div className="inline-flex items-center gap-2 px-4 py-1.5 bg-[#0052FF]/15 border border-[#0052FF]/40 rounded-full shadow-[0_0_20px_rgba(0,82,255,0.3)] mb-2">
-            <Zap className="h-4 w-4 text-[#00D4FF]" />
-            <span className="text-xs font-bold text-white uppercase tracking-wider">Next-Gen Agentic Commerce</span>
+    <main className="mx-auto max-w-7xl px-6 py-10">
+      <section className="grid gap-8 lg:grid-cols-[1.25fr_0.75fr]">
+        <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-6 shadow-glow">
+          <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-blue-500/30 bg-blue-500/10 px-3 py-1 text-xs text-blue-300">
+            <Sparkles className="h-3.5 w-3.5" /> AI Growth & Agentic Commerce Engine
           </div>
-          <h1 className="text-5xl font-black tracking-tight sm:text-6xl text-white">
-            Razor<span className="bg-gradient-to-r from-[#0052FF] to-[#00D4FF] bg-clip-text text-transparent">Pulse</span>
+          <h1 className="text-4xl font-black tracking-tight text-white md:text-5xl">
+            Autonomous merchant onboarding that turns intent into revenue.
           </h1>
-          <p className="text-lg text-slate-300 max-w-xl mx-auto leading-relaxed">
-            Autonomous context-aware merchant onboarding, instant zero-form KYC synthesis, and tailored Razorpay product intelligence.
+          <p className="mt-4 max-w-2xl text-base text-slate-300">
+            RazorPulse scans digital footprints, classifies the merchant model, and recommends the highest-ROI Razorpay stack with bounded, explainable guardrails.
           </p>
+
+          <div className="mt-6 space-y-4">
+            <label className="block text-sm font-medium text-slate-200">Merchant URL or Instagram handle</label>
+            <div className="flex flex-col gap-3 md:flex-row">
+              <input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                className="flex-1 rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-base text-white outline-none ring-0 placeholder:text-slate-500"
+                placeholder="https://mybrand.com or @mybrand"
+              />
+              <button
+                onClick={handleAnalyze}
+                disabled={loading}
+                className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-500 px-5 py-3 font-semibold text-white disabled:opacity-60"
+              >
+                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
+                {loading ? "Running" : "Analyze Merchant"}
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-3 md:grid-cols-2">
+            {presets.map((preset) => (
+              <button
+                key={preset.label}
+                onClick={() => handlePreset(preset.value)}
+                className="rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-left text-sm text-slate-200 transition hover:border-blue-500/50 hover:bg-slate-800"
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
         </div>
 
-        <Card className="bg-[#07172C]/85 border-[#0052FF]/30 backdrop-blur-xl shadow-[0_16px_50px_rgba(0,0,0,0.7)]">
-          <CardHeader>
-            <CardTitle className="text-white text-2xl">Evaluate Merchant</CardTitle>
-            <CardDescription className="text-slate-400">
-              Enter a website URL or social handle to begin the agentic multi-modal analysis.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            <form onSubmit={(e) => { e.preventDefault(); handleEvaluate(); }} className="flex gap-4">
-              <div className="relative flex-1">
-                <Search className="absolute left-3 top-3 h-5 w-5 text-slate-400" />
-                <Input
-                  type="text"
-                  placeholder="https://mybrand.com or @instagram_handle"
-                  className="pl-10 h-12 bg-[#02042B] border-slate-700 text-white focus-visible:ring-[#0052FF]"
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                />
-              </div>
-              <Button type="submit" size="lg" className="h-12 bg-[#0052FF] hover:bg-[#0052FF]/80 text-white font-semibold px-8">
-                Run Agent
-              </Button>
-            </form>
-
-            <div className="space-y-4 pt-4 border-t border-slate-700/50">
-              <p className="text-sm font-medium text-slate-400">Quick Preset Demos:</p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Button 
-                  variant="outline" 
-                  className="justify-start h-auto py-3 bg-[#02042B]/50 border-slate-700 hover:bg-[#0C2340] hover:text-white text-slate-300"
-                  onClick={() => setPreset("https://fashion-d2c-demo.com")}
-                >
-                  <ShoppingBag className="mr-2 h-4 w-4 text-[#10B981]" />
-                  <div className="text-left">
-                    <div className="font-semibold">Fashion D2C Brand</div>
-                    <div className="text-xs text-slate-500">High Cart Drops</div>
-                  </div>
-                </Button>
-
-                <Button 
-                  variant="outline" 
-                  className="justify-start h-auto py-3 bg-[#02042B]/50 border-slate-700 hover:bg-[#0C2340] hover:text-white text-slate-300"
-                  onClick={() => setPreset("https://b2b-saas-startup.com")}
-                >
-                  <Briefcase className="mr-2 h-4 w-4 text-[#0052FF]" />
-                  <div className="text-left">
-                    <div className="font-semibold">B2B SaaS Startup</div>
-                    <div className="text-xs text-slate-500">Recurring Invoices</div>
-                  </div>
-                </Button>
-
-                <Button 
-                  variant="outline" 
-                  className="justify-start h-auto py-3 bg-[#02042B]/50 border-slate-700 hover:bg-[#0C2340] hover:text-white text-slate-300"
-                  onClick={() => setPreset("https://instagram.com/niche_artisan")}
-                >
-                  <Share2 className="mr-2 h-4 w-4 text-pink-500" />
-                  <div className="text-left">
-                    <div className="font-semibold">Niche Artisan Store</div>
-                    <div className="text-xs text-slate-500">Social / Payment Links</div>
-                  </div>
-                </Button>
-
-                <Button 
-                  variant="outline" 
-                  className="justify-start h-auto py-3 bg-[#02042B]/50 border-slate-700 hover:bg-[#0C2340] hover:text-white text-slate-300"
-                  onClick={() => setPreset("https://broken-invalid-store.com")}
-                >
-                  <AlertCircle className="mr-2 h-4 w-4 text-red-500" />
-                  <div className="text-left">
-                    <div className="font-semibold">Broken / Invalid Store</div>
-                    <div className="text-xs text-slate-500">Failure Recovery Mode</div>
-                  </div>
-                </Button>
-              </div>
+        <div className="space-y-4">
+          <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-5">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold">Execution status</h2>
+              <span className="rounded-full border border-slate-600 bg-slate-800 px-2 py-1 text-xs text-slate-300">{stepCount}/4</span>
             </div>
-          </CardContent>
-        </Card>
-      </div>
-    </div>
+            <p className="mt-3 min-h-[48px] text-sm text-slate-300">{status || "Awaiting merchant input..."}</p>
+            <div className="mt-5">
+              <ScraperProgress steps={steps} />
+            </div>
+          </div>
+
+          <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-5">
+            <div className="flex items-center gap-2 text-blue-300">
+              <ShieldCheck className="h-4 w-4" />
+              <span className="text-sm font-medium">Bounded Decisioning</span>
+            </div>
+            <ul className="mt-4 space-y-3 text-sm text-slate-300">
+              <li className="flex items-start gap-2"><CheckCheck className="mt-0.5 h-4 w-4 text-green-400" /> Explainable ROI & risk thresholds</li>
+              <li className="flex items-start gap-2"><CheckCheck className="mt-0.5 h-4 w-4 text-green-400" /> Auditable LLM traces and JSON schema outputs</li>
+              <li className="flex items-start gap-2"><CheckCheck className="mt-0.5 h-4 w-4 text-green-400" /> Graceful fallback when scraping or Groq fails</li>
+            </ul>
+          </div>
+
+          <div className="rounded-3xl border border-slate-800 bg-slate-900/60 p-5">
+            <div className="flex items-center gap-2 text-green-300">
+              <Globe className="h-4 w-4" />
+              <span className="text-sm font-medium">Live Data Sources</span>
+            </div>
+            <p className="mt-3 text-sm text-slate-300">Website scraping, social brand metadata, merchant heuristics, and product-match reasoning stitched together in one decision engine.</p>
+          </div>
+        </div>
+      </section>
+    </main>
   );
 }

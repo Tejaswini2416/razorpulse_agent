@@ -1,37 +1,71 @@
-from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional
+from __future__ import annotations
 
-class KYCData(BaseModel):
-    gstin_clue: Optional[str] = Field(None, description="Extracted GSTIN or clues about it")
-    registered_name: Optional[str] = Field(None, description="Registered legal name of the business")
-    compliance_checklist: List[str] = Field(default_factory=list, description="List of detected compliance items like Privacy Policy, T&C")
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class KycPrefillData(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    legal_name: str = ""
+    gstin: str = ""
+    business_email: str = ""
+    business_phone: str = ""
+    registered_address: str = ""
+    compliance_checklist: list[str] = Field(default_factory=list)
+    verification_status: str = "inferred"
+
 
 class ProductRecommendation(BaseModel):
-    product_name: str = Field(..., description="Name of the Razorpay product (e.g., Razorpay Magic Checkout, Payment Pages, Subscriptions)")
-    rationale: str = Field(..., description="Explainable rationale for this recommendation")
-    estimated_conversion_lift_percent: float = Field(..., description="Estimated conversion lift percentage", ge=0.0, le=30.0)
-    annual_saved_revenue_inr: float = Field(..., description="Calculated annual saved revenue in INR", ge=0.0)
-    confidence_score: float = Field(..., description="Confidence in this recommendation (0-100)", ge=0.0, le=100.0)
-    
-    @field_validator("confidence_score")
-    def check_confidence(cls, v, info):
-        # We can add custom validation if needed, e.g., high-tier products need high confidence
-        return v
-        
+    model_config = ConfigDict(extra="allow")
+
+    product_name: str
+    category: str
+    match_score: int = Field(..., ge=0, le=100)
+    roi_projection: float = Field(..., ge=0)
+    annual_saved_revenue: float = Field(..., ge=0)
+    rationale: str
+    confidence: int = Field(..., ge=0, le=100)
+    explainability: list[str]
+    guardrails: list[str]
+    recommended: bool = True
+    bounded_risk: str = "Low"
+
+
 class MerchantAnalysis(BaseModel):
-    business_name: str = Field(..., description="Extracted name of the business")
-    detected_category: str = Field(..., description="Business category (e.g., Fashion D2C, B2B SaaS)")
-    cart_type: str = Field(..., description="Cart platform used (e.g., Shopify, WooCommerce, Custom, None)")
-    estimated_aov: float = Field(..., description="Estimated Average Order Value in INR")
-    risk_score: int = Field(..., description="Calculated risk score (0-100), 0 being lowest risk", ge=0, le=100)
-    kyc_prefill_data: KYCData
-    recommended_products: List[ProductRecommendation]
+    model_config = ConfigDict(extra="allow")
 
-class ScraperStatus(BaseModel):
-    step: str
-    status: str # "pending", "running", "completed", "failed"
+    business_name: str
+    detected_category: str
+    cart_type: str
+    estimated_aov: int = Field(..., ge=0)
+    risk_score: int = Field(..., ge=0, le=100)
+    confidence_score: int = Field(..., ge=0, le=100)
+    kyc_prefill_data: KycPrefillData
+    summary: str
+    recommendations: list[ProductRecommendation]
+    growth_levers: list[str]
+    failure_mode: bool = False
+    failure_reason: str | None = None
+
+
+class StatusUpdate(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    event: str
+    step: int | None = None
     message: str
-    data: Optional[dict] = None
+    status: Literal["running", "success", "warning", "failed"] = "running"
+    payload: dict[str, Any] | None = None
 
-class MerchantRequest(BaseModel):
-    url: str
+
+class AuditLogEntry(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    session_id: str
+    merchant_input: str
+    status: str
+    trace: list[dict[str, Any]]
+    scraped_summary: dict[str, Any]
+    analysis: MerchantAnalysis | None = None
